@@ -32,14 +32,22 @@ class UniversalPriceExtractor:
         """
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self.precio_keywords = [
-            'precio', 'price', 'valor', 'value', 'costo', 'cost', 
-            'unitario', 'unit', 'total', 'monto', 'amount', 'tarifa', 
-            'rate', 'pago', 'payment'
+            'precio', 'price', 'valor', 'value', 'costo', 'cost',
+            'unitario', 'unit', 'total', 'monto', 'amount', 'tarifa',
+            'rate', 'pago', 'payment', 'p.u.', 'p.unit', 'p/u', 'valor_unitario',
+            'precio_unitario', 'precio_unit', 'precio unit', 'pu', 'punit', 'p unit',
+            'importe', 'precio por', 'coste', '$', 'valor$', 'p.u', 'p_u',
+            'precio/u', 'precio/unidad', 'precio_u', 'precio u', 'val unit',
+            'valor unit', 'val/u', 'val_u', 'costo unit', 'costo/u', 'costo_u'
         ]
         self.actividad_keywords = [
             'actividad', 'activity', 'item', 'concepto', 'concept',
             'descripcion', 'description', 'servicio', 'service',
-            'producto', 'product', 'trabajo', 'work', 'tarea', 'task'
+            'producto', 'product', 'trabajo', 'work', 'tarea', 'task',
+            'detalle', 'detail', 'articulo', 'article', 'material',
+            'insumo', 'input', 'elemento', 'element', 'partida', 'item',
+            'desc', 'nombre', 'name', 'denominacion', 'designation',
+            'especificacion', 'specification', 'caracteristica', 'characteristic'
         ]
         
         # Inicializar el gestor de caché si está habilitado
@@ -48,14 +56,78 @@ class UniversalPriceExtractor:
             from modules.cache_manager import CacheManager
             self.cache_manager = CacheManager(expiry_days=cache_expiry_days)
             logger.info("Sistema de caché inicializado")
+            
+        # Modo debug para diagnóstico detallado
+        self.debug_mode = False
         
-    def extract_from_file(self, file_path, interactive=False):
+    def set_debug_mode(self, enabled: bool = True):
+        """Activa o desactiva el modo de depuración."""
+        self.debug_mode = enabled
+        if enabled:
+            logger.setLevel(logging.DEBUG)
+        else:
+            logger.setLevel(logging.INFO)
+            
+    def debug_excel_extraction(self, file_path: str) -> bool:
+        """Análisis detallado del archivo Excel para debugging."""
+        try:
+            logger.info(f"=== Iniciando análisis detallado de: {file_path} ===")
+            xls = pd.ExcelFile(file_path)
+            sheets = xls.sheet_names
+            logger.info(f"Hojas detectadas: {sheets}")
+            
+            for sheet in sheets:
+                logger.info(f"\n=== Analizando hoja: {sheet} ===")
+                df = pd.read_excel(file_path, sheet_name=sheet)
+                logger.info(f"Dimensiones: {df.shape}")
+                logger.info(f"Columnas: {df.columns.tolist()}")
+                logger.info(f"Tipos de datos:\n{df.dtypes}")
+                
+                # Análisis de columnas
+                for col in df.columns:
+                    col_lower = str(col).lower()
+                    precio_match = any(keyword in col_lower for keyword in self.precio_keywords)
+                    actividad_match = any(keyword in col_lower for keyword in self.actividad_keywords)
+                    
+                    logger.info(f"\nColumna: {col}")
+                    logger.info(f"  - ¿Posible columna de precio? {precio_match}")
+                    logger.info(f"  - ¿Posible columna de actividad? {actividad_match}")
+                    logger.info(f"  - Primeros valores: {df[col].head(3).tolist()}")
+                    
+                    # Análisis de contenido numérico
+                    if df[col].dtype in [np.float64, np.int64]:
+                        logger.info(f"  - Estadísticas numéricas:")
+                        logger.info(f"    * Media: {df[col].mean()}")
+                        logger.info(f"    * Min: {df[col].min()}")
+                        logger.info(f"    * Max: {df[col].max()}")
+                    
+                    # Análisis de texto
+                    if df[col].dtype == object:
+                        sample = df[col].dropna().head(3).tolist()
+                        logger.info(f"  - Ejemplos de texto: {sample}")
+                        
+                # Buscar patrones de precio en todas las columnas
+                logger.info("\nBúsqueda de patrones de precio en todas las columnas:")
+                for col in df.columns:
+                    if df[col].dtype == object:
+                        precio_pattern = r'\$?\s*\d+([.,]\d{2})?'
+                        matches = df[col].astype(str).str.extract(precio_pattern, expand=False)
+                        if matches.notna().any():
+                            logger.info(f"  - Columna {col} contiene posibles precios: {matches.dropna().head(3).tolist()}")
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error en debug de Excel: {str(e)}")
+            return False
+        
+    def extract_from_file(self, file_path, interactive=False, column_mapping=None):
         """
         Extrae precios de un archivo en cualquier formato soportado.
         
         Args:
             file_path: Ruta al archivo
             interactive: Si debe solicitar ayuda al usuario para mapeo de columnas
+            column_mapping: Diccionario con mapeo manual de columnas {'actividades': 'col1', 'precios': 'col2'}
             
         Returns:
             DataFrame con actividades y precios normalizados
@@ -76,7 +148,7 @@ class UniversalPriceExtractor:
         # Detectar formato y llamar al extractor correspondiente
         try:
             if file_ext in ['.xlsx', '.xls', '.xlsm']:
-                result_df = self._extract_from_excel(file_path, interactive)
+                result_df = self._extract_from_excel(file_path, interactive, column_mapping)
             elif file_ext == '.csv':
                 result_df = self._extract_from_csv(file_path, interactive)
             elif file_ext == '.pdf':
@@ -113,17 +185,22 @@ class UniversalPriceExtractor:
                 return result_df
             raise
     
-    def _extract_from_excel(self, file_path, interactive=False):
+    def _extract_from_excel(self, file_path, interactive=False, column_mapping=None):
         """Extrae datos de archivos Excel."""
         try:
             # Intentar leer todas las hojas
             xls = pd.ExcelFile(file_path)
             sheets = xls.sheet_names
             
+            if self.debug_mode:
+                logger.debug(f"Hojas encontradas en {file_path}: {sheets}")
+            
             if len(sheets) == 1:
                 # Si solo hay una hoja, usarla directamente
+                if self.debug_mode:
+                    logger.debug(f"Usando única hoja: {sheets[0]}")
                 df = pd.read_excel(file_path)
-                return self._process_tabular_data(df, file_path, interactive)
+                return self._process_tabular_data(df, file_path, interactive, sheet_name=sheets[0], column_mapping=column_mapping)
             else:
                 # Si hay múltiples hojas, buscar la que contiene precios
                 for sheet in sheets:
@@ -131,8 +208,9 @@ class UniversalPriceExtractor:
                     
                     # Verificar si esta hoja parece contener precios
                     if self._sheet_contains_prices(df):
-                        logger.info(f"Usando hoja '{sheet}' que contiene datos de precios")
-                        return self._process_tabular_data(df, file_path, interactive, sheet_name=sheet)
+                        if self.debug_mode:
+                            logger.debug(f"Hoja con precios encontrada: {sheet}")
+                        return self._process_tabular_data(df, file_path, interactive, sheet_name=sheet, column_mapping=column_mapping)
                 
                 # Si ninguna hoja es obviamente la correcta y estamos en modo interactivo
                 if interactive and len(sheets) > 0:
@@ -145,14 +223,15 @@ class UniversalPriceExtractor:
                         sheet_idx = int(sheet_idx) - 1
                         if 0 <= sheet_idx < len(sheets):
                             df = pd.read_excel(file_path, sheet_name=sheets[sheet_idx])
-                            return self._process_tabular_data(df, file_path, interactive, sheet_name=sheets[sheet_idx])
+                            return self._process_tabular_data(df, file_path, interactive, sheet_name=sheets[sheet_idx], column_mapping=column_mapping)
                     except:
                         pass
                 
                 # Si todo falla, usar la primera hoja
-                logger.warning(f"No se pudo determinar automáticamente la hoja correcta. Usando la primera.")
+                if self.debug_mode:
+                    logger.debug(f"No se encontró hoja con precios, usando primera hoja: {sheets[0]}")
                 df = pd.read_excel(file_path, sheet_name=0)
-                return self._process_tabular_data(df, file_path, interactive, sheet_name=sheets[0])
+                return self._process_tabular_data(df, file_path, interactive, sheet_name=sheets[0], column_mapping=column_mapping)
                 
         except Exception as e:
             logger.exception(f"Error al procesar archivo Excel {file_path}: {str(e)}")
@@ -487,7 +566,7 @@ class UniversalPriceExtractor:
         """Determina si una tabla parece contener precios."""
         return self._sheet_contains_prices(df)  # Por ahora, misma lógica que para hojas
     
-    def _process_tabular_data(self, df, file_path, interactive=False, sheet_name=None):
+    def _process_tabular_data(self, df, file_path, interactive=False, sheet_name=None, column_mapping=None):
         """
         Procesa datos tabulares para normalizar y extraer precios.
         
@@ -509,36 +588,63 @@ class UniversalPriceExtractor:
         # Normalizar nombres de columnas
         df.columns = [str(col).strip().lower() for col in df.columns]
         
-        # Intentar identificar columnas clave automáticamente
+        # Intentar identificar columnas clave
         activity_col = None
         price_col = None
         quantity_col = None
         
-        # 1. Buscar por nombres de columna
-        for col in df.columns:
-            col_lower = unidecode.unidecode(str(col)).lower()
+        if column_mapping:
+            # Usar mapeo manual de columnas
+            if self.debug_mode:
+                logger.debug(f"Usando mapeo manual de columnas: {column_mapping}")
             
-            # Identificar columna de actividades
-            if not activity_col:
-                for keyword in self.actividad_keywords:
-                    if keyword in col_lower:
-                        activity_col = col
-                        break
+            activity_col = column_mapping.get('actividades')
+            price_col = column_mapping.get('precios')
+            quantity_col = column_mapping.get('cantidad')
             
-            # Identificar columna de precios
-            if not price_col:
-                for keyword in self.precio_keywords:
-                    if keyword in col_lower:
-                        # Verificar si esta columna parece contener valores numéricos
-                        if self._column_contains_numbers(df[col]):
-                            price_col = col
+            # Verificar que las columnas existan
+            for col_name, col_value in column_mapping.items():
+                if col_value and col_value not in df.columns:
+                    raise ValueError(f"Columna {col_value} no encontrada en el archivo para {col_name}")
+                    
+            if self.debug_mode:
+                logger.debug(f"Columnas mapeadas: actividad={activity_col}, precio={price_col}, cantidad={quantity_col}")
+        else:
+            # Buscar columnas automáticamente
+            if self.debug_mode:
+                logger.debug("Buscando columnas automáticamente")
+            
+            # 1. Buscar por nombres de columna
+            for col in df.columns:
+                col_lower = unidecode.unidecode(str(col)).lower()
+                
+                # Identificar columna de actividades
+                if not activity_col:
+                    for keyword in self.actividad_keywords:
+                        if keyword in col_lower:
+                            activity_col = col
+                            if self.debug_mode:
+                                logger.debug(f"Columna de actividad encontrada: {col}")
                             break
-            
-            # Identificar columna de cantidad
-            if not quantity_col:
-                if any(qty in col_lower for qty in ['cantidad', 'quantity', 'qty', 'cant', 'cant.', 'unidades', 'units']):
-                    if self._column_contains_numbers(df[col]):
-                        quantity_col = col
+                
+                # Identificar columna de precios
+                if not price_col:
+                    for keyword in self.precio_keywords:
+                        if keyword in col_lower:
+                            # Verificar si esta columna parece contener valores numéricos
+                            if self._column_contains_numbers(df[col]):
+                                price_col = col
+                                if self.debug_mode:
+                                    logger.debug(f"Columna de precio encontrada: {col}")
+                                break
+                
+                # Identificar columna de cantidad
+                if not quantity_col:
+                    if any(qty in col_lower for qty in ['cantidad', 'quantity', 'qty', 'cant', 'cant.', 'unidades', 'units']):
+                        if self._column_contains_numbers(df[col]):
+                            quantity_col = col
+                            if self.debug_mode:
+                                logger.debug(f"Columna de cantidad encontrada: {col}")
         
         # 2. Si no se encontraron columnas por nombre, intentar por contenido
         if not activity_col or not price_col:

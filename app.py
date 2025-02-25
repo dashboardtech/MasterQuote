@@ -239,11 +239,14 @@ with tab2:
         st.write("Sube archivos con precios en cualquier formato (Excel, CSV, PDF, Word, imagen)")
 
         # Opciones adicionales
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             usar_ia = st.checkbox("Usar IA para procesamiento avanzado", value=True)
         with col2:
             modo_interactivo = st.checkbox("Modo interactivo (para formatos complejos)", value=False)
+        with col3:
+            mapeo_manual = st.checkbox("Mapeo manual de columnas", value=False,
+                                     help="Permite especificar manualmente qué columnas contienen las actividades y precios")
         
         # Uploader para múltiples formatos
         uploaded_files = st.file_uploader(
@@ -252,6 +255,69 @@ with tab2:
             accept_multiple_files=True,
             key="precio_uploader"
         )
+        
+        # Configuración de mapeo manual
+        column_mapping = None
+        if mapeo_manual and uploaded_files:
+            st.write("### Configuración de Mapeo de Columnas")
+            
+            # Mostrar vista previa del primer archivo
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_files[0].name.split('.')[-1]}") as tmp:
+                tmp.write(uploaded_files[0].getvalue())
+                temp_path = tmp.name
+                
+            try:
+                if temp_path.endswith(('.xlsx', '.xls')):
+                    df_preview = pd.read_excel(temp_path)
+                elif temp_path.endswith('.csv'):
+                    df_preview = pd.read_csv(temp_path)
+                else:
+                    df_preview = None
+                    st.warning("Vista previa solo disponible para archivos Excel y CSV")
+                
+                if df_preview is not None:
+                    st.write("Vista previa del archivo:")
+                    st.dataframe(df_preview.head())
+                    
+                    # Permitir selección de columnas
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        col_actividades = st.selectbox(
+                            "Columna de Actividades",
+                            options=["[Auto-detectar]"] + df_preview.columns.tolist(),
+                            help="Columna que contiene las descripciones de actividades"
+                        )
+                    with col2:
+                        col_precios = st.selectbox(
+                            "Columna de Precios",
+                            options=["[Auto-detectar]"] + df_preview.columns.tolist(),
+                            help="Columna que contiene los precios unitarios"
+                        )
+                    with col3:
+                        col_cantidad = st.selectbox(
+                            "Columna de Cantidad",
+                            options=["[No usar]"] + df_preview.columns.tolist(),
+                            help="Opcional: columna que contiene las cantidades"
+                        )
+                    
+                    # Crear mapeo de columnas
+                    column_mapping = {}
+                    if col_actividades != "[Auto-detectar]":
+                        column_mapping['actividades'] = col_actividades
+                    if col_precios != "[Auto-detectar]":
+                        column_mapping['precios'] = col_precios
+                    if col_cantidad != "[No usar]":
+                        column_mapping['cantidad'] = col_cantidad
+                        
+                    if column_mapping:
+                        st.info("Se usará el mapeo manual de columnas para todos los archivos Excel y CSV")
+                    
+            except Exception as e:
+                st.error(f"Error al previsualizar el archivo: {e}")
+                column_mapping = None
+            finally:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
         
     with import_tab2:
         st.write("""
@@ -485,7 +551,7 @@ with tab2:
                         extractor.api_key = None
                     
                     # Procesar el archivo
-                    df_extraido = extractor.extract_from_file(temp_path, interactive=modo_interactivo)
+                    df_extraido = extractor.extract_from_file(temp_path, interactive=modo_interactivo, column_mapping=column_mapping)
                     
                     # Mostrar resultados
                     st.subheader(f"Precios extraídos de {uploaded_file.name}")
