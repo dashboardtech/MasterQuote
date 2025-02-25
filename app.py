@@ -228,24 +228,246 @@ with tab1:
 with tab2:
     st.subheader("Importar Precios")
     st.write("""
-    Sube archivos con precios en cualquier formato (Excel, CSV, PDF, Word, imagen) 
-    y el sistema los procesará automáticamente.
+    Importa precios desde archivos o ingresa directamente el texto con los precios.
+    El sistema procesará automáticamente la información en cualquier formato.
     """)
     
-    # Opciones adicionales
-    col1, col2 = st.columns(2)
-    with col1:
-        usar_ia = st.checkbox("Usar IA para procesamiento avanzado", value=True)
-    with col2:
-        modo_interactivo = st.checkbox("Modo interactivo (para formatos complejos)", value=False)
+    # Crear pestañas para los diferentes métodos de entrada
+    import_tab1, import_tab2 = st.tabs(["Subir Archivo", "Ingresar Texto"])
     
-    # Uploader para múltiples formatos
-    uploaded_files = st.file_uploader(
-        "Arrastra aquí los archivos con precios", 
-        type=["xlsx", "xls", "csv", "pdf", "docx", "doc", "jpg", "jpeg", "png", "txt"],
-        accept_multiple_files=True,
-        key="precio_uploader"
-    )
+    with import_tab1:
+        st.write("Sube archivos con precios en cualquier formato (Excel, CSV, PDF, Word, imagen)")
+
+        # Opciones adicionales
+        col1, col2 = st.columns(2)
+        with col1:
+            usar_ia = st.checkbox("Usar IA para procesamiento avanzado", value=True)
+        with col2:
+            modo_interactivo = st.checkbox("Modo interactivo (para formatos complejos)", value=False)
+        
+        # Uploader para múltiples formatos
+        uploaded_files = st.file_uploader(
+            "Arrastra aquí los archivos con precios", 
+            type=["xlsx", "xls", "csv", "pdf", "docx", "doc", "jpg", "jpeg", "png", "txt"],
+            accept_multiple_files=True,
+            key="precio_uploader"
+        )
+        
+    with import_tab2:
+        st.write("""
+        Pega el texto con los precios aquí. El sistema procesará:
+        1. Texto simple con precios
+        2. Datos copiados de Excel (formato tabular)
+        3. Listas de precios en cualquier formato
+        """)
+        
+        # Opciones de formato
+        formato_entrada = st.radio(
+            "Formato de entrada",
+            ["Texto Simple", "Datos de Excel (Tabular)"],
+            help="Selecciona 'Datos de Excel' si copiaste directamente desde Excel"
+        )
+        
+        # Área de texto para entrada directa
+        texto_precios = st.text_area(
+            "Texto con Precios",
+            height=300,
+            placeholder="Ejemplo para texto simple:\nLaptop Dell XPS 13 - $1,299.99\nMonitor LG 27\" - $399.99 x 2\n\nO pega datos copiados directamente de Excel"
+        )
+        
+        # Columnas para mapeo si es formato tabular
+        if formato_entrada == "Datos de Excel (Tabular)":
+            st.write("Configuración de Columnas:")
+            
+            tipo_tabla = st.radio(
+                "Tipo de Tabla",
+                ["Tabla Simple", "Tabla de Construcción (Mano de obra + Material)"],
+                help="Selecciona 'Tabla de Construcción' si tu tabla tiene columnas separadas para mano de obra y material"
+            )
+            
+            if tipo_tabla == "Tabla Simple":
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    col_descripcion = st.number_input(
+                        "Columna de Descripción (1-based)",
+                        min_value=1,
+                        value=1,
+                        help="Número de columna que contiene la descripción"
+                    )
+                with col2:
+                    col_precio = st.number_input(
+                        "Columna de Precio (1-based)",
+                        min_value=1,
+                        value=2,
+                        help="Número de columna que contiene el precio"
+                    )
+                with col3:
+                    col_cantidad = st.number_input(
+                        "Columna de Cantidad (1-based)",
+                        min_value=1,
+                        value=2,
+                        help="Número de columna que contiene la cantidad"
+                    )
+            else:
+                col1, col2 = st.columns(2)
+                with col1:
+                    col_descripcion = st.number_input(
+                        "Columna de Descripción",
+                        min_value=1,
+                        value=1,
+                        help="Número de columna que contiene la descripción"
+                    )
+                    col_cantidad = st.number_input(
+                        "Columna de Cantidad",
+                        min_value=1,
+                        value=2,
+                        help="Número de columna que contiene la cantidad"
+                    )
+                with col2:
+                    col_mano_obra = st.number_input(
+                        "Columna P.U. Mano de Obra",
+                        min_value=1,
+                        value=4,
+                        help="Número de columna que contiene el precio unitario de mano de obra"
+                    )
+                    col_material = st.number_input(
+                        "Columna P.U. Material",
+                        min_value=1,
+                        value=6,
+                        help="Número de columna que contiene el precio unitario de material"
+                    )
+        
+        # Botón para procesar texto
+        if st.button("Procesar Texto") and texto_precios:
+            try:
+                # Procesar según el formato seleccionado
+                if formato_entrada == "Datos de Excel (Tabular)":
+                    # Convertir texto tabular a DataFrame
+                    try:
+                        # Dividir el texto en líneas y procesar como CSV
+                        import io
+                        import csv
+                        
+                        # Limpiar el texto y convertir a CSV
+                        lines = texto_precios.strip().split('\n')
+                        processed_lines = []
+                        for line in lines:
+                            # Dividir por tabulaciones o espacios múltiples
+                            cells = [cell.strip() for cell in line.split('\t')]
+                            if len(cells) == 1:  # Si no hay tabs, dividir por espacios
+                                cells = [cell.strip() for cell in line.split('  ') if cell.strip()]
+                            processed_lines.append(cells)
+                        
+                        # Crear DataFrame
+                        df = pd.DataFrame(processed_lines)
+                        
+                        # Extraer columnas según la configuración del usuario
+                        df_final = pd.DataFrame()
+                        df_final['actividades'] = df[col_descripcion - 1]
+                        
+                        if tipo_tabla == "Tabla Simple":
+                            df_final['costo_unitario'] = df[col_precio - 1]
+                            if col_cantidad:
+                                df_final['cantidad'] = df[col_cantidad - 1]
+                        else:
+                            # Procesar tabla de construcción
+                            df_final['cantidad'] = df[col_cantidad - 1]
+                            df_final['mano_obra_unitario'] = df[col_mano_obra - 1]
+                            df_final['material_unitario'] = df[col_material - 1]
+                            
+                            # Convertir y limpiar datos
+                            df_final['mano_obra_unitario'] = df_final['mano_obra_unitario'].apply(lambda x: str(x).replace('$', '').replace(',', ''))
+                            df_final['material_unitario'] = df_final['material_unitario'].apply(lambda x: str(x).replace('$', '').replace(',', ''))
+                            
+                            # Convertir a números
+                            df_final['mano_obra_unitario'] = pd.to_numeric(df_final['mano_obra_unitario'], errors='coerce')
+                            df_final['material_unitario'] = pd.to_numeric(df_final['material_unitario'], errors='coerce')
+                            
+                            # Calcular costo unitario total
+                            df_final['costo_unitario'] = df_final['mano_obra_unitario'].fillna(0) + df_final['material_unitario'].fillna(0)
+                        
+                        # Limpiar y convertir datos comunes
+                        if 'costo_unitario' in df_final.columns:
+                            df_final['costo_unitario'] = df_final['costo_unitario'].apply(lambda x: str(x).replace('$', '').replace(',', '') if isinstance(x, str) else x)
+                            df_final['costo_unitario'] = pd.to_numeric(df_final['costo_unitario'], errors='coerce')
+                        
+                        if 'cantidad' in df_final.columns:
+                            df_final['cantidad'] = pd.to_numeric(df_final['cantidad'], errors='coerce')
+                            df_final['cantidad'] = df_final['cantidad'].fillna(1)
+                            df_final['costo_total'] = df_final['costo_unitario'] * df_final['cantidad']
+                        
+                        # Eliminar filas con precios nulos o 0
+                        df_final = df_final[df_final['costo_unitario'].notna() & (df_final['costo_unitario'] > 0)]
+                        
+                    except Exception as e:
+                        st.error(f"Error al procesar datos tabulares: {str(e)}")
+                        logger.exception("Error procesando datos tabulares")
+                        df_final = None
+                        
+                else:
+                    # Crear un DataFrame simple para el texto
+                    df_final = pd.DataFrame()
+                
+                try:
+                    with st.spinner("Procesando texto..."):
+                        if formato_entrada == "Datos de Excel (Tabular)":
+                            # Usar directamente el DataFrame procesado
+                            df = df_final
+                        else:
+                            # Procesar texto simple con el extractor universal
+                            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as tmp:
+                                tmp.write(texto_precios)
+                                temp_path = tmp.name
+                                # Procesar con el extractor universal
+                                df = extractor.extract_from_file(temp_path)
+                                # Limpiar archivo temporal
+                                os.unlink(temp_path)
+                        
+                        if df is not None and not df.empty:
+                            st.success("¡Texto procesado exitosamente!")
+                            
+                            # Mostrar resultados
+                            st.subheader("Resultados Extraídos")
+                            st.dataframe(df)
+                            
+                            # Mostrar estadísticas
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Total de Items", len(df))
+                            with col2:
+                                total = df['costo_total'].sum() if 'costo_total' in df.columns else (df['costo_unitario'] * df.get('cantidad', 1)).sum()
+                                st.metric("Costo Total", f"${total:,.2f}")
+                            with col3:
+                                promedio = df['costo_unitario'].mean()
+                                st.metric("Precio Promedio", f"${promedio:,.2f}")
+                            
+                            # Opción para guardar en la base de datos
+                            if st.button("Guardar en Base de Datos", key="save_text_to_db"):
+                                items = []
+                                for _, row in df.iterrows():
+                                    item = {
+                                        'actividad': row['actividades'],
+                                        'precio': float(row['costo_unitario']),
+                                        'fecha': datetime.now(),
+                                        'fuente': 'entrada_texto',
+                                        'proyecto': nombre_proyecto,
+                                        'cliente': cliente
+                                    }
+                                    items.append(item)
+                                
+                                db.agregar_items(items)
+                                st.success("¡Datos guardados en la base de datos!")
+                        else:
+                            st.warning("No se pudieron extraer datos del texto proporcionado.")
+                            
+                finally:
+                    # Limpiar archivo temporal
+                    if os.path.exists(temp_path):
+                        os.unlink(temp_path)
+                        
+            except Exception as e:
+                st.error(f"Error al procesar el texto: {str(e)}")
+                logger.exception("Error al procesar texto ingresado")
     
     if uploaded_files:
         st.info(f"Se procesarán {len(uploaded_files)} archivos...")
