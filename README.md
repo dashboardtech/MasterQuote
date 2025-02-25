@@ -58,6 +58,32 @@ Sistema avanzado para la gestión de cotizaciones con asistencia de inteligencia
    - **Histórico de Precios**: Consultar precios históricos
    - **Administrar Datos**: Gestionar la base de datos y categorías
 
+## Estructura de Ramas y Desarrollo
+
+El proyecto sigue un modelo de desarrollo basado en ramas (GitFlow):
+
+- `main`: Rama principal de producción
+- `develop`: Rama principal de desarrollo
+- Features en desarrollo:
+  - `feature/parallel-processing`: Implementación de procesamiento paralelo para mejorar rendimiento
+  - `feature/ocr-improvements`: Mejoras en el sistema OCR para mejor reconocimiento
+  - `feature/ui-enhancements`: Mejoras en la interfaz de usuario
+
+### Flujo de Desarrollo
+
+1. Todo desarrollo nuevo debe partir de la rama `develop`
+2. Para nuevas características:
+   ```bash
+   git checkout develop
+   git pull
+   git checkout -b feature/nueva-caracteristica
+   # Desarrollo y commits
+   git push origin feature/nueva-caracteristica
+   # Crear Pull Request a develop
+   ```
+3. Los Pull Requests requieren revisión y pruebas antes de ser fusionados
+4. Las releases se preparan en `develop` y se fusionan a `main`
+
 ## Estructura del Proyecto
 
 ```
