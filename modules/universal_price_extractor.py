@@ -21,16 +21,23 @@ class UniversalPriceExtractor:
     Soporta Excel, CSV, PDF, Word, imágenes (con OCR) y utiliza IA para casos complejos.
     """
     
-    def __init__(self, api_key=None, use_cache=True, cache_expiry_days=30):
+    def __init__(self, api_key=None, dockling_api_key=None, use_cache=True, cache_expiry_days=30):
         """
         Inicializa el extractor.
         
         Args:
             api_key: API key para OpenAI (opcional)
+            dockling_api_key: API key para Dockling (opcional)
             use_cache: Si se debe usar caché para archivos procesados
             cache_expiry_days: Días tras los cuales la caché se considera obsoleta
         """
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
+        self.dockling_api_key = dockling_api_key or os.environ.get("DOCKLING_API_KEY")
+        
+        if not self.dockling_api_key:
+            logger.warning("No se ha configurado API key para Dockling. Algunas funciones estarán limitadas.")
+        else:
+            logger.info("API key de Dockling configurada correctamente")
         self.precio_keywords = [
             'precio', 'price', 'valor', 'value', 'costo', 'cost',
             'unitario', 'unit', 'total', 'monto', 'amount', 'tarifa',

@@ -13,14 +13,22 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 class CotizacionLLM:
-    def __init__(self, db_connector: PriceDatabase):
+    def __init__(self, db_connector: PriceDatabase, api_key: Optional[str] = None):
         """
         Inicializa el procesador de cotizaciones con LLM.
         
         Args:
             db_connector: Conector a la base de datos de precios
+            api_key: API key para OpenAI (opcional)
         """
         self.db = db_connector
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
+        
+        if not self.api_key:
+            logger.warning("No se ha configurado API key para OpenAI. Algunas funciones estarán limitadas.")
+        else:
+            logger.info("API key de OpenAI configurada correctamente")
+        
         logger.info("Inicializado procesador de cotizaciones con LLM")
         
         # Cargar configuración

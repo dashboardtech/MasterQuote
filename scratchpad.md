@@ -1,50 +1,75 @@
-# Implementación del Sistema de Caché Inteligente
+# Optimización del Sistema de Cotizaciones
 
 ## Objetivo
-Implementar un sistema de caché inteligente para optimizar el procesamiento de archivos en el Extractor Universal de Precios.
+Mejorar la arquitectura y rendimiento del sistema de cotizaciones, integrando procesamiento asíncrono y mejorando la seguridad.
 
 ## Plan de Implementación
-[X] 1. Crear módulo de caché (modules/cache_manager.py)
-    - ✅ Sistema de hashing MD5
-    - ✅ Gestión de almacenamiento/recuperación
-    - ✅ Control de expiración
-    - ✅ Estadísticas de uso
 
-[X] 2. Modificar el Extractor Universal
-    - ✅ Integrar verificación de caché
-    - ✅ Implementar guardado automático
-    - ✅ Agregar medición de tiempo
+### Fase 1: Arquitectura Base
+[X] 1. Implementar DocLing Adapter
+    - ✅ Crear adaptador básico
+    - ✅ Integrar extracción de tablas
+    - ✅ Agregar tests unitarios
+    - ✅ Integrar con Streamlit UI
 
-[X] 3. Actualizar la interfaz Streamlit
-    - ✅ Agregar sección de caché
-    - ✅ Implementar visualización de estadísticas
-    - ✅ Agregar controles de administración
+### Fase 2: Optimización de Arquitectura
+[X] 1. Implementar Extractores Especializados
+    - ✅ BaseExtractor abstracto
+    - ✅ ExcelExtractor
+    - ✅ CSVExtractor
+    - ✅ PDFExtractor
+    - ✅ AIAssistedExtractor
+    - ✅ DocklingExtractor
 
-[X] 4. Crear pruebas (tests/test_cache.py)
-    - ✅ Pruebas de rendimiento
-    - ✅ Validación de funcionalidad
-    - ✅ Generación de estadísticas
+[ ] 2. Procesamiento Asíncrono
+    - [ ] AsyncProcessor para tareas en segundo plano
+    - [ ] BatchProcessor para múltiples archivos
+    - [ ] UI de progreso en Streamlit
 
-## Progreso
+[ ] 3. Seguridad
+    - [ ] SecretManager para API keys
+    - [ ] APIKeyManager para OpenAI
+    - [ ] UI de gestión de secretos
 
-Se ha completado la implementación y prueba del sistema de caché inteligente:
-- ✅ Sistema de caché funcionando correctamente
-- ✅ Pruebas exitosas con archivo de ejemplo
-- ✅ Mejora de rendimiento significativa (285.6x más rápido)
-- ✅ Estadísticas de uso implementadas
+## Estado Actual
 
-## Notas y Lecciones Aprendidas
+1. **Extractores Implementados**:
+   - ✅ BaseExtractor con normalización de precios
+   - ✅ ExcelExtractor con soporte multi-hoja
+   - ✅ CSVExtractor con detección de formato
+   - ✅ PDFExtractor con OCR fallback
+   - ✅ AIAssistedExtractor para casos complejos
+   - ✅ DocklingExtractor para procesamiento avanzado
 
-1. **Rendimiento**:
-   - La caché reduce el tiempo de procesamiento de 0.14s a prácticamente 0s
-   - El tamaño de la caché es muy eficiente (<1MB para el archivo de prueba)
+2. **Próximos Pasos**:
+   - Implementar procesamiento asíncrono
+   - Agregar gestión segura de API keys
+   - Actualizar UI de Streamlit
 
-2. **Implementación**:
-   - El sistema de hashing MD5 es efectivo para identificar archivos
-   - La serialización JSON funciona bien para almacenar los resultados
-   - Los logs proporcionan información útil para debugging
+## Lecciones Aprendidas
 
-3. **Próximos Pasos**:
-   - Implementar procesamiento paralelo para múltiples archivos
-   - Optimizar el OCR para imágenes y PDFs escaneados
-   - Reducir el uso de la API de OpenAI mediante caché inteligente
+1. **Gestión de Dependencias**:
+   - Usar versiones flexibles (>= en lugar de ==) para evitar conflictos de dependencias
+   - Verificar compatibilidad entre paquetes antes de fijar versiones
+   - Para openpyxl, usar versión >=3.1.5 cuando se usa con docling
+
+2. **Streamlit Cache**:
+   - Para argumentos no hasheables en funciones cacheadas, usar prefijo '_' (e.g., _secret_manager)
+   - Esto es especialmente importante para objetos complejos como gestores de API y bases de datos
+   - El caché mejora significativamente el rendimiento al evitar reinicializaciones
+
+3. **Extracción de Datos**:
+   - Usar múltiples estrategias de extracción mejora la robustez
+   - La normalización de precios debe manejar diversos formatos
+   - El OCR es útil como fallback para PDFs complejos
+
+2. **Arquitectura**:
+   - El patrón Factory simplifica la selección de extractores
+   - La herencia común reduce la duplicación de código
+   - Los extractores especializados mejoran la precisión
+
+3. **APIs Externas**:
+   - Dockling proporciona capacidades avanzadas de extracción
+   - La gestión de API keys debe ser segura y flexible
+   - El manejo de errores de API es crucial
+
