@@ -1,0 +1,43 @@
+# Configuración del sistema de cotizaciones
+
+# Configuración de precios unitarios
+precios_unitarios:
+  limpieza_general:
+    precio_fijo: 1000
+    unidad: "m2"
+    descripcion: "Limpieza general de área"
+  
+  pintura_interior:
+    url: "https://example.com/precios/pintura"
+    selector: ".precio-pintura"
+    default_price: 1200
+    unidad: "m2"
+    descripcion: "Pintura interior de paredes"
+    
+  instalacion_electrica:
+    url: "https://example.com/precios/electricidad"
+    selector: ".precio-instalacion"
+    default_price: 1500
+    unidad: "punto"
+    descripcion: "Instalación de punto eléctrico"
+
+# Configuración de categorías
+categorias:
+  - nombre: "Construcción"
+    descripcion: "Actividades relacionadas con construcción general"
+  - nombre: "Instalación"
+    descripcion: "Servicios de instalación de sistemas"
+  - nombre: "Acabados"
+    descripcion: "Trabajos de acabados y terminaciones"
+
+# Configuración de base de datos
+database:
+  path: "price_history.db"
+  backup_interval: 24  # horas
+
+# Configuración de exportación
+export:
+  default_format: "xlsx"
+  templates_dir: "templates"
+  company_name: "MasterQuote"
+  company_logo: "assets/logo.png"

@@ -1,0 +1,17 @@
+Lista de Precios - Equipos de Computación
+
+1. Laptop HP Pavilion
+   - Procesador i5, 8GB RAM, 512GB SSD
+   - Precio: $899.99
+
+2. Monitor Samsung 24"
+   - Full HD, 1ms respuesta
+   - Precio: $249.99
+
+3. Impresora Epson L3150
+   - Multifuncional con tanque de tinta
+   - Precio: $299.99
+
+4. Teclado Logitech G Pro
+   - Mecánico RGB
+   - Precio: $129.99
