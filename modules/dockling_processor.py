@@ -41,9 +41,15 @@ class DocklingProcessor:
             Lista de DataFrames, cada uno representando una tabla extraída
         """
         if not self.api_key:
-            raise ValueError("Se requiere API key de Dockling para extraer tablas")
+            logger.warning("No se ha configurado API key de Dockling para extraer tablas")
+            return []
         
         try:
+            # Verificar que el archivo existe
+            if not os.path.exists(file_path):
+                logger.error(f"El archivo no existe: {file_path}")
+                return []
+                
             # Preparar archivo para envío
             with open(file_path, 'rb') as f:
                 files = {'file': (os.path.basename(file_path), f)}
@@ -54,15 +60,27 @@ class DocklingProcessor:
                 }
                 
                 # Realizar petición al API
-                response = requests.post(
-                    f"{self.base_url}/extract/tables",
-                    files=files,
-                    headers=headers
-                )
+                try:
+                    response = requests.post(
+                        f"{self.base_url}/extract/tables",
+                        files=files,
+                        headers=headers,
+                        timeout=30  # Añadir timeout para evitar bloqueos
+                    )
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"Error de conexión con API Dockling: {str(e)}")
+                    return []
                 
                 if response.status_code != 200:
-                    logger.error(f"Error en API Dockling: {response.status_code}, {response.text}")
-                    raise ValueError(f"Error al procesar documento: {response.text}")
+                    error_msg = f"Error en API Dockling: {response.status_code}"
+                    try:
+                        error_detail = response.json().get('error', 'Sin detalles')
+                        error_msg += f", {error_detail}"
+                    except:
+                        error_msg += f", {response.text[:100]}"
+                    
+                    logger.error(error_msg)
+                    return []
                 
                 # Procesar respuesta
                 result = response.json()
@@ -98,36 +116,46 @@ class DocklingProcessor:
             DataFrame con actividades y precios normalizados
         """
         if not self.api_key:
-            raise ValueError("Se requiere API key de Dockling para extraer datos de precios")
+            logger.warning("No se ha configurado API key de Dockling para extraer datos de precios")
+            return pd.DataFrame()
         
         try:
+            # Verificar que el archivo existe
+            if not os.path.exists(file_path):
+                logger.error(f"El archivo no existe: {file_path}")
+                return pd.DataFrame()
+                
             # Preparar archivo para envío
             with open(file_path, 'rb') as f:
                 files = {'file': (os.path.basename(file_path), f)}
                 
-                # Configurar parámetros de extracción específicos para precios
-                params = {
-                    'extraction_type': 'prices',
-                    'expected_fields': 'activity,description,quantity,unit_price,total_price',
-                    'language': 'es'
-                }
-                
-                # Configurar headers
+                # Configurar headers de autenticación
                 headers = {
                     'Authorization': f'Bearer {self.api_key}'
                 }
                 
                 # Realizar petición al API
-                response = requests.post(
-                    f"{self.base_url}/extract/structured",
-                    files=files,
-                    params=params,
-                    headers=headers
-                )
+                try:
+                    response = requests.post(
+                        f"{self.base_url}/extract/prices",
+                        files=files,
+                        headers=headers,
+                        timeout=30  # Añadir timeout para evitar bloqueos
+                    )
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"Error de conexión con API Dockling (precios): {str(e)}")
+                    return pd.DataFrame()
                 
                 if response.status_code != 200:
-                    logger.error(f"Error en API Dockling: {response.status_code}, {response.text}")
-                    raise ValueError(f"Error al procesar documento: {response.text}")
+                    error_msg = f"Error en API Dockling (precios): {response.status_code}"
+                    try:
+                        error_detail = response.json().get('error', 'Sin detalles')
+                        error_msg += f", {error_detail}"
+                    except:
+                        error_msg += f", {response.text[:100]}"
+                    
+                    logger.error(error_msg)
+                    return pd.DataFrame()
                 
                 # Procesar respuesta
                 result = response.json()
@@ -169,7 +197,7 @@ class DocklingProcessor:
                 
         except Exception as e:
             logger.exception(f"Error al extraer datos de precios con Dockling: {str(e)}")
-            raise
+            return pd.DataFrame()
     
     def convert_document_to_text(self, file_path: str) -> str:
         """
@@ -182,35 +210,53 @@ class DocklingProcessor:
             Texto extraído del documento
         """
         if not self.api_key:
-            raise ValueError("Se requiere API key de Dockling para convertir documento a texto")
+            logger.warning("No se ha configurado API key de Dockling para convertir documento a texto")
+            return ""
         
         try:
+            # Verificar que el archivo existe
+            if not os.path.exists(file_path):
+                logger.error(f"El archivo no existe: {file_path}")
+                return ""
+                
             # Preparar archivo para envío
             with open(file_path, 'rb') as f:
                 files = {'file': (os.path.basename(file_path), f)}
                 
-                # Configurar headers
+                # Configurar headers de autenticación
                 headers = {
                     'Authorization': f'Bearer {self.api_key}'
                 }
                 
                 # Realizar petición al API
-                response = requests.post(
-                    f"{self.base_url}/convert/text",
-                    files=files,
-                    headers=headers
-                )
+                try:
+                    response = requests.post(
+                        f"{self.base_url}/convert/text",
+                        files=files,
+                        headers=headers,
+                        timeout=30
+                    )
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"Error de conexión con API Dockling (texto): {str(e)}")
+                    return ""
                 
                 if response.status_code != 200:
-                    logger.error(f"Error en API Dockling: {response.status_code}, {response.text}")
-                    raise ValueError(f"Error al convertir documento: {response.text}")
+                    error_msg = f"Error en API Dockling (texto): {response.status_code}"
+                    try:
+                        error_detail = response.json().get('error', 'Sin detalles')
+                        error_msg += f", {error_detail}"
+                    except:
+                        error_msg += f", {response.text[:100]}"
+                    
+                    logger.error(error_msg)
+                    return ""
                 
                 # Obtener texto extraído
                 return response.text
                 
         except Exception as e:
             logger.exception(f"Error al convertir documento a texto con Dockling: {str(e)}")
-            raise
+            return ""
     
     def analyze_document_structure(self, file_path: str) -> Dict[str, Any]:
         """
@@ -223,32 +269,50 @@ class DocklingProcessor:
             Diccionario con información sobre la estructura del documento
         """
         if not self.api_key:
-            raise ValueError("Se requiere API key de Dockling para analizar documento")
+            logger.warning("No se ha configurado API key de Dockling para analizar estructura")
+            return {}
         
         try:
+            # Verificar que el archivo existe
+            if not os.path.exists(file_path):
+                logger.error(f"El archivo no existe: {file_path}")
+                return {}
+                
             # Preparar archivo para envío
             with open(file_path, 'rb') as f:
                 files = {'file': (os.path.basename(file_path), f)}
                 
-                # Configurar headers
+                # Configurar headers de autenticación
                 headers = {
                     'Authorization': f'Bearer {self.api_key}'
                 }
                 
                 # Realizar petición al API
-                response = requests.post(
-                    f"{self.base_url}/analyze/structure",
-                    files=files,
-                    headers=headers
-                )
+                try:
+                    response = requests.post(
+                        f"{self.base_url}/analyze/structure",
+                        files=files,
+                        headers=headers,
+                        timeout=30
+                    )
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"Error de conexión con API Dockling (estructura): {str(e)}")
+                    return {}
                 
                 if response.status_code != 200:
-                    logger.error(f"Error en API Dockling: {response.status_code}, {response.text}")
-                    raise ValueError(f"Error al analizar documento: {response.text}")
+                    error_msg = f"Error en API Dockling (estructura): {response.status_code}"
+                    try:
+                        error_detail = response.json().get('error', 'Sin detalles')
+                        error_msg += f", {error_detail}"
+                    except:
+                        error_msg += f", {response.text[:100]}"
+                    
+                    logger.error(error_msg)
+                    return {}
                 
                 # Procesar respuesta
                 return response.json()
                 
         except Exception as e:
-            logger.exception(f"Error al analizar documento con Dockling: {str(e)}")
-            raise
+            logger.exception(f"Error al analizar estructura con Dockling: {str(e)}")
+            return {}

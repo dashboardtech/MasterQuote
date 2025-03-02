@@ -61,8 +61,20 @@ class UniversalPriceExtractor:
         self.use_cache = use_cache
         if use_cache:
             from modules.cache_manager import CacheManager
-            self.cache_manager = CacheManager(expiry_days=cache_expiry_days)
+            # Convertir días a segundos para el parámetro expiration_time
+            expiration_time = cache_expiry_days * 24 * 60 * 60
+            self.cache_manager = CacheManager(expiration_time=expiration_time)
             logger.info("Sistema de caché inicializado")
+            
+        # Inicializar el gestor de extractores para validación cruzada
+        from modules.extractor_manager import ExtractorManager
+        self.extractor_manager = ExtractorManager(
+            api_key=self.api_key,
+            dockling_api_key=self.dockling_api_key,
+            num_extractors=3,
+            use_parallel=True
+        )
+        logger.info("Gestor de extractores inicializado para validación cruzada")
             
         # Modo debug para diagnóstico detallado
         self.debug_mode = False
@@ -117,7 +129,7 @@ class UniversalPriceExtractor:
                 logger.info("\nBúsqueda de patrones de precio en todas las columnas:")
                 for col in df.columns:
                     if df[col].dtype == object:
-                        precio_pattern = r'\$?\s*\d+([.,]\d{2})?'
+                        precio_pattern = r'\$?\s*\d+([.,]\d{2})?|\d+([.,]\d+)?\s*[$€£¥]'
                         matches = df[col].astype(str).str.extract(precio_pattern, expand=False)
                         if matches.notna().any():
                             logger.info(f"  - Columna {col} contiene posibles precios: {matches.dropna().head(3).tolist()}")
@@ -127,7 +139,7 @@ class UniversalPriceExtractor:
             logger.error(f"Error en debug de Excel: {str(e)}")
             return False
         
-    def extract_from_file(self, file_path, interactive=False, column_mapping=None):
+    def extract_from_file(self, file_path, interactive=False, column_mapping=None, use_validation=False, min_confidence=0.5):
         """
         Extrae precios de un archivo en cualquier formato soportado.
         
@@ -135,11 +147,24 @@ class UniversalPriceExtractor:
             file_path: Ruta al archivo
             interactive: Si debe solicitar ayuda al usuario para mapeo de columnas
             column_mapping: Diccionario con mapeo manual de columnas {'actividades': 'col1', 'precios': 'col2'}
+            use_validation: Si debe usar validación cruzada con múltiples extractores
+            min_confidence: Confianza mínima requerida para aceptar resultados de validación
             
         Returns:
             DataFrame con actividades y precios normalizados
         """
         start_time = time.time()
+        
+        # Si file_path es un objeto UploadedFile de Streamlit, guardarlo temporalmente
+        if hasattr(file_path, 'getvalue'):
+            import tempfile
+            import os
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file_path.name)[1]) as tmp:
+                tmp.write(file_path.getbuffer())
+                temp_file_path = tmp.name
+            
+            file_path = temp_file_path
         
         # Verificar si los resultados están en caché
         if self.use_cache and hasattr(self, 'cache_manager'):
@@ -147,8 +172,82 @@ class UniversalPriceExtractor:
             if cached_df is not None:
                 processing_time = time.time() - start_time
                 logger.info(f"Resultados cargados desde caché en {processing_time:.2f} segundos")
+                
+                # Limpiar archivo temporal si existe
+                if 'temp_file_path' in locals():
+                    try:
+                        os.unlink(temp_file_path)
+                    except:
+                        pass
+                
                 return cached_df
         
+        # Si se solicita validación cruzada, usar el gestor de extractores
+        if use_validation:
+            try:
+                logger.info(f"Usando validación cruzada para procesar {file_path}")
+                df, metadata = self.extractor_manager.extract_with_validation(file_path)
+                
+                # Verificar confianza mínima
+                confidence = metadata.get('confidence', 0.0)
+                if confidence < min_confidence:
+                    logger.warning(f"Confianza insuficiente: {confidence:.2f} < {min_confidence}")
+                    
+                    # Si la confianza es baja, intentar con el método tradicional
+                    logger.info("Intentando con método tradicional debido a baja confianza")
+                    traditional_df = self._extract_traditional(file_path, interactive, column_mapping)
+                    
+                    # Comparar resultados y elegir el mejor
+                    if traditional_df is not None and not traditional_df.empty:
+                        if df is None or df.empty or len(traditional_df) > len(df):
+                            logger.info("Usando resultados del método tradicional")
+                            df = traditional_df
+                
+                processing_time = time.time() - start_time
+                logger.info(f"Archivo procesado con validación cruzada en {processing_time:.2f} segundos")
+                
+                # Guardar resultados en caché
+                if self.use_cache and hasattr(self, 'cache_manager') and df is not None and not df.empty:
+                    self.cache_manager.save_to_cache(file_path, df)
+                
+                # Limpiar archivo temporal si existe
+                if 'temp_file_path' in locals():
+                    try:
+                        os.unlink(temp_file_path)
+                    except:
+                        pass
+                
+                return df
+                
+            except Exception as e:
+                logger.exception(f"Error en validación cruzada: {str(e)}")
+                logger.info("Fallback a método tradicional")
+                # Continuar con el método tradicional
+        
+        # Método tradicional de extracción
+        result_df = self._extract_traditional(file_path, interactive, column_mapping)
+        
+        # Limpiar archivo temporal si existe
+        if 'temp_file_path' in locals():
+            try:
+                os.unlink(temp_file_path)
+            except:
+                pass
+        
+        return result_df
+    
+    def _extract_traditional(self, file_path, interactive=False, column_mapping=None):
+        """
+        Método tradicional de extracción basado en el formato del archivo.
+        
+        Args:
+            file_path: Ruta al archivo
+            interactive: Si debe solicitar ayuda al usuario para mapeo de columnas
+            column_mapping: Diccionario con mapeo manual de columnas
+            
+        Returns:
+            DataFrame con actividades y precios normalizados
+        """
         file_ext = Path(file_path).suffix.lower()
         logger.info(f"Procesando archivo {file_path} con formato {file_ext}")
         
@@ -169,9 +268,6 @@ class UniversalPriceExtractor:
             else:
                 logger.error(f"Formato de archivo no soportado: {file_ext}")
                 raise ValueError(f"Formato de archivo no soportado: {file_ext}")
-            
-            processing_time = time.time() - start_time
-            logger.info(f"Archivo procesado en {processing_time:.2f} segundos")
             
             # Guardar resultados en caché
             if self.use_cache and hasattr(self, 'cache_manager') and result_df is not None and not result_df.empty:
@@ -561,7 +657,7 @@ class UniversalPriceExtractor:
         for col in df.columns:
             if df[col].dtype == object:  # Solo para columnas de texto
                 # Contar cuántas celdas parecen tener valores monetarios
-                monetary_pattern = r'[$€£¥]\s*\d+([.,]\d+)?|\d+([.,]\d+)?\s*[$€£¥]'
+                monetary_pattern = r'[$€£¥]\s*\d+([.,]\d{2})?|\d+([.,]\d+)?\s*[$€£¥]'
                 monetary_cells = df[col].astype(str).str.contains(monetary_pattern, regex=True).sum()
                 
                 if monetary_cells > len(df) * 0.3:  # Al menos 30% de las celdas

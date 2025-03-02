@@ -59,11 +59,27 @@ class ExtractorFactory:
             # Si el formato no es soportado por extractores específicos,
             # intentar con Dockling
             logger.info(f"Formato {file_ext} no soportado por extractores específicos, usando Dockling")
-            return DocklingExtractor(api_key=api_key)
+            try:
+                return DocklingExtractor(api_key=api_key)
+            except Exception as e:
+                logger.error(f"Error al crear extractor Dockling: {str(e)}")
+                # Fallback a AIAssistedExtractor como último recurso
+                logger.info("Usando AIAssistedExtractor como fallback")
+                return AIAssistedExtractor(api_key=api_key)
         
-        # Si es una función lambda (para AIAssistedExtractor), llamarla
-        if callable(extractor_class) and not isinstance(extractor_class, type):
+        try:
+            # Si es una función lambda (para AIAssistedExtractor), llamarla
+            if callable(extractor_class) and not isinstance(extractor_class, type):
+                return extractor_class()
+            
+            # Para otros extractores, crear una instancia directamente
             return extractor_class()
-        
-        # Para otros extractores, crear una instancia directamente
-        return extractor_class()
+        except Exception as e:
+            logger.error(f"Error al crear extractor para {file_ext}: {str(e)}")
+            # Fallback a Dockling como último recurso
+            logger.info("Usando Dockling como fallback")
+            try:
+                return DocklingExtractor(api_key=api_key)
+            except Exception as e2:
+                logger.error(f"Error al crear extractor Dockling de fallback: {str(e2)}")
+                raise ValueError(f"No se pudo crear un extractor para el archivo {file_path}: {str(e)}")

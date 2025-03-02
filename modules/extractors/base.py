@@ -10,8 +10,18 @@ class BaseExtractor(ABC):
     """Clase base abstracta para todos los extractores de precios."""
     
     @abstractmethod
-    def extract(self, file_path: str, interactive: bool = False) -> pd.DataFrame:
-        """Extrae datos de precios del archivo."""
+    def extract(self, file_path: str, interactive: bool = False, process_all_sheets: bool = False) -> pd.DataFrame:
+        """
+        Extrae datos de un archivo.
+        
+        Args:
+            file_path: Ruta al archivo
+            interactive: Si debe ser interactivo
+            process_all_sheets: Si debe procesar todas las hojas en caso de archivos con múltiples hojas
+            
+        Returns:
+            DataFrame con actividades y precios
+        """
         pass
     
     def _normalize_price_column(self, series):

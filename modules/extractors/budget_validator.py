@@ -58,7 +58,9 @@ class BudgetValidator:
                 df["total_calculado"] = df["cantidad"] * df["precio_unitario"]
                 
                 # Identificar discrepancias significativas (más del 1%)
-                df["discrepancia"] = abs(df["total"] - df["total_calculado"]) / df["total"].replace(0, np.nan)
+                # Usar infer_objects para evitar el FutureWarning
+                total_replaced = df["total"].replace(0, np.nan).infer_objects(copy=False)
+                df["discrepancia"] = abs(df["total"] - df["total_calculado"]) / total_replaced
                 inconsistencias = df[df["discrepancia"] > 0.01].dropna(subset=["discrepancia"])
                 
                 if len(inconsistencias) > 0:
@@ -79,230 +81,404 @@ class BudgetValidator:
             logger.exception(f"Error al validar y completar datos de presupuesto: {str(e)}")
             return df
     
+    @classmethod
+    def validate_budget_consistency(cls, df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+        """
+        Valida la consistencia de los datos de presupuesto.
+        
+        Implementa un sistema de validación parcial que permite:
+        1. Validación completa: cantidad * precio_unitario ≈ total
+        2. Validación parcial: filas con descripción y al menos dos valores numéricos
+        3. Validación de subtotales y agrupaciones
+        
+        Args:
+            df: DataFrame con los datos de presupuesto
+            
+        Returns:
+            Tuple con:
+            - DataFrame con columna de validación añadida
+            - Diccionario con metadatos de validación
+        """
+        try:
+            # Hacer una copia para no modificar el original
+            df = df.copy()
+            
+            # Inicializar columnas de validación
+            df["valid"] = False
+            df["validation_type"] = "none"
+            df["error_type"] = None
+            
+            # Inicializar metadatos
+            metadata = {
+                "total_rows": len(df),
+                "valid_rows": 0,
+                "valid_percentage": 0.0,
+                "validation_types": {},
+                "error_types": {}
+            }
+            
+            # Verificar que tenemos las columnas necesarias
+            required_cols = ["cantidad", "precio_unitario", "total", "descripcion"]
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            
+            if missing_cols:
+                logger.warning(f"Faltan columnas requeridas para validación: {missing_cols}")
+                metadata["error"] = f"Faltan columnas requeridas: {missing_cols}"
+                return df, metadata
+            
+            # Paso 1: Calcular total esperado (cantidad * precio_unitario)
+            df["total_esperado"] = df["cantidad"] * df["precio_unitario"]
+            
+            # Paso 2: Validación completa (cantidad * precio_unitario ≈ total)
+            try:
+                # Umbral de discrepancia aceptable (5%)
+                threshold = 0.05
+                
+                # Calcular discrepancia solo para filas con valores numéricos válidos
+                mask_full = (
+                    df["cantidad"].notna() & 
+                    df["precio_unitario"].notna() & 
+                    df["total"].notna() &
+                    df["total_esperado"].notna() &
+                    (df["cantidad"] != 0) & 
+                    (df["precio_unitario"] != 0) & 
+                    (df["total"] != 0)
+                )
+                
+                if mask_full.any():
+                    # Calcular discrepancia como porcentaje del total
+                    df.loc[mask_full, "discrepancia"] = (
+                        (df.loc[mask_full, "total"] - df.loc[mask_full, "total_esperado"]).abs() / 
+                        df.loc[mask_full, "total"]
+                    )
+                    
+                    # Marcar como válidas las filas con discrepancia menor al umbral
+                    full_valid = mask_full & (df["discrepancia"] <= threshold)
+                    
+                    if full_valid.any():
+                        df.loc[full_valid, "valid"] = True
+                        df.loc[full_valid, "validation_type"] = "full"
+                        
+                        # Registrar estadísticas
+                        full_valid_count = full_valid.sum()
+                        metadata["validation_types"]["full"] = full_valid_count
+                        
+                        logger.info(f"Validación completa: {full_valid_count} filas válidas de {mask_full.sum()} con datos completos")
+                    
+                    # Marcar error para filas con discrepancia mayor al umbral
+                    invalid_discrepancy = mask_full & (df["discrepancia"] > threshold)
+                    if invalid_discrepancy.any():
+                        df.loc[invalid_discrepancy, "error_type"] = "high_discrepancy"
+                        metadata["error_types"]["high_discrepancy"] = invalid_discrepancy.sum()
+            except Exception as e:
+                logger.exception(f"Error en validación completa: {str(e)}")
+            
+            # Paso 3: Validación parcial para filas con descripción y al menos dos valores numéricos
+            try:
+                # Identificar filas no validadas previamente
+                not_validated = ~df["valid"]
+                
+                # Filas con descripción no vacía
+                has_description = df["descripcion"].notna() & (df["descripcion"].astype(str).str.strip() != "")
+                
+                # Contar valores numéricos válidos por fila
+                numeric_cols = ["cantidad", "precio_unitario", "total"]
+                valid_numeric_count = df[numeric_cols].notna().sum(axis=1)
+                
+                # Criterios para validación parcial
+                partial_criteria = {
+                    # Caso 1: Tiene descripción y exactamente dos valores numéricos (el tercero se puede calcular)
+                    "calculable": not_validated & has_description & (valid_numeric_count == 2),
+                    
+                    # Caso 2: Tiene descripción y un valor numérico, pero parece ser un subtotal o agrupación
+                    "grouping": not_validated & has_description & (valid_numeric_count == 1) & 
+                                df["descripcion"].astype(str).str.lower().str.contains(
+                                    r'total|subtotal|suma|capítulo|partida|grupo', regex=True
+                                ),
+                    
+                    # Caso 3: Tiene descripción y tres valores, pero no cumplen la relación matemática
+                    # (posiblemente por redondeo o factores adicionales)
+                    "inconsistent": not_validated & has_description & (valid_numeric_count == 3) & 
+                                   df["total"].notna() & df["total_esperado"].notna()
+                }
+                
+                # Aplicar validación parcial para cada criterio
+                for validation_type, mask in partial_criteria.items():
+                    if mask.any():
+                        df.loc[mask, "valid"] = True
+                        df.loc[mask, "validation_type"] = validation_type
+                        
+                        # Registrar estadísticas
+                        count = mask.sum()
+                        metadata["validation_types"][validation_type] = count
+                        logger.info(f"Validación parcial ({validation_type}): {count} filas")
+                
+                # Paso 3.1: Para filas calculables, completar el valor faltante
+                calculable = partial_criteria["calculable"]
+                if calculable.any():
+                    # Identificar qué valor falta y calcularlo
+                    for _, row in df[calculable].iterrows():
+                        idx = row.name
+                        if pd.isna(row["cantidad"]) and pd.notna(row["precio_unitario"]) and pd.notna(row["total"]):
+                            # Calcular cantidad
+                            if row["precio_unitario"] != 0:
+                                df.loc[idx, "cantidad"] = row["total"] / row["precio_unitario"]
+                                df.loc[idx, "error_type"] = "calculated_quantity"
+                        elif pd.isna(row["precio_unitario"]) and pd.notna(row["cantidad"]) and pd.notna(row["total"]):
+                            # Calcular precio unitario
+                            if row["cantidad"] != 0:
+                                df.loc[idx, "precio_unitario"] = row["total"] / row["cantidad"]
+                                df.loc[idx, "error_type"] = "calculated_price"
+                        elif pd.isna(row["total"]) and pd.notna(row["cantidad"]) and pd.notna(row["precio_unitario"]):
+                            # Calcular total
+                            df.loc[idx, "total"] = row["cantidad"] * row["precio_unitario"]
+                            df.loc[idx, "error_type"] = "calculated_total"
+            except Exception as e:
+                logger.exception(f"Error en validación parcial: {str(e)}")
+            
+            # Paso 4: Validación contextual basada en filas vecinas
+            try:
+                # Identificar filas no validadas previamente
+                still_not_validated = ~df["valid"]
+                
+                if still_not_validated.any():
+                    # Buscar patrones de filas similares ya validadas
+                    valid_rows = df[df["valid"]].copy()
+                    
+                    if not valid_rows.empty:
+                        # Para cada fila no validada, buscar similitud con filas validadas
+                        for idx in df[still_not_validated].index:
+                            row = df.loc[idx]
+                            
+                            # Verificar si tiene descripción
+                            if pd.notna(row["descripcion"]) and row["descripcion"].strip() != "":
+                                # Buscar filas validadas con descripción similar
+                                desc = row["descripcion"].lower()
+                                
+                                # Calcular similitud de descripción con filas validadas
+                                # (implementación simplificada - en producción usar algo como TF-IDF o embeddings)
+                                similar_rows = []
+                                for valid_idx, valid_row in valid_rows.iterrows():
+                                    if pd.notna(valid_row["descripcion"]):
+                                        valid_desc = valid_row["descripcion"].lower()
+                                        # Calcular similitud basada en palabras compartidas
+                                        words1 = set(re.findall(r'\w+', desc))
+                                        words2 = set(re.findall(r'\w+', valid_desc))
+                                        if words1 and words2:
+                                            similarity = len(words1 & words2) / len(words1 | words2)
+                                            if similarity > 0.5:  # Umbral de similitud
+                                                similar_rows.append((valid_idx, similarity))
+                                
+                                # Si encontramos filas similares, validar por contexto
+                                if similar_rows:
+                                    df.loc[idx, "valid"] = True
+                                    df.loc[idx, "validation_type"] = "contextual"
+                                    df.loc[idx, "error_type"] = "similar_description"
+                                    
+                                    # Incrementar contador
+                                    metadata["validation_types"]["contextual"] = metadata["validation_types"].get("contextual", 0) + 1
+            except Exception as e:
+                logger.exception(f"Error en validación contextual: {str(e)}")
+            
+            # Paso 5: Calcular estadísticas finales
+            valid_count = df["valid"].sum()
+            metadata["valid_rows"] = valid_count
+            metadata["valid_percentage"] = (valid_count / len(df)) * 100 if len(df) > 0 else 0
+            
+            # Contar tipos de error para filas no válidas
+            invalid_rows = ~df["valid"]
+            if invalid_rows.any():
+                error_counts = df.loc[invalid_rows, "error_type"].value_counts().to_dict()
+                for error_type, count in error_counts.items():
+                    if pd.notna(error_type):
+                        metadata["error_types"][error_type] = count
+                
+                # Filas sin tipo de error específico
+                no_error_type = invalid_rows & df["error_type"].isna()
+                if no_error_type.any():
+                    metadata["error_types"]["unknown"] = no_error_type.sum()
+            
+            # Registrar estadísticas de validación
+            logger.info(f"Validación completada: {valid_count}/{len(df)} filas válidas ({metadata['valid_percentage']:.2f}%)")
+            for vtype, count in metadata["validation_types"].items():
+                logger.info(f"  - Tipo {vtype}: {count} filas")
+            
+            return df, metadata
+            
+        except Exception as e:
+            logger.exception(f"Error en validación de presupuesto: {str(e)}")
+            return df, {"error": str(e), "total_rows": len(df), "valid_rows": 0, "valid_percentage": 0.0}
+    
     @staticmethod
     def detect_price_unit_column(df: pd.DataFrame, column_map: Dict[str, str]) -> Dict[str, str]:
         """
-        Detecta columnas de precio unitario por análisis de contenido.
+        Detecta la columna de precio unitario en un DataFrame.
+        
+        Utiliza un algoritmo sofisticado que considera:
+        1. Nombres de columnas (coincidencia con patrones conocidos)
+        2. Análisis de magnitud (comparación de medias entre columnas)
+        3. Relaciones matemáticas (validación mediante cálculos)
         
         Args:
-            df: DataFrame con datos de presupuesto
-            column_map: Mapa de columnas actual
+            df: DataFrame con los datos
+            column_map: Mapeo de columnas ya identificadas
             
         Returns:
-            Mapa de columnas actualizado
+            Mapeo actualizado con la columna de precio unitario identificada
         """
         try:
-            # Si ya tenemos precio unitario, no hacer nada
+            # Si ya tenemos identificada la columna de precio unitario, devolver el mapeo actual
             if "precio_unitario" in column_map.values():
                 return column_map
+                
+            # Verificar si tenemos las columnas necesarias para detectar el precio unitario
+            if "cantidad" not in column_map.values() or "total" not in column_map.values():
+                logger.warning("No se pueden detectar columnas de precio unitario sin columnas de cantidad y total")
+                return column_map
+                
+            # Obtener los nombres de las columnas de cantidad y total
+            qty_col = next(col for col, mapped in column_map.items() if mapped == "cantidad")
+            total_col = next(col for col, mapped in column_map.items() if mapped == "total")
             
-            # Buscar columnas numéricas que podrían ser precios unitarios
-            numeric_cols = []
-            for col in df.columns:
-                if col not in column_map.values():
-                    # Verificar si la columna contiene principalmente valores numéricos
-                    try:
-                        numeric_values = pd.to_numeric(df[col], errors='coerce')
-                        # Verificar que no sean todos NaN
-                        if numeric_values.notna().sum() > 0:
-                            # Si más del 50% son números y no son todos 0 o 1 (posibles flags)
-                            if (numeric_values.notna().mean() > 0.5 and 
-                                len(numeric_values.unique()) > 2):
-                                numeric_cols.append(col)
-                    except Exception as e:
-                        logger.debug(f"Error al analizar columna {col} como numérica: {str(e)}")
-                        continue
+            # Columnas candidatas (excluir columnas ya mapeadas)
+            mapped_cols = set(column_map.values())
+            candidate_cols = [col for col in df.columns if col not in column_map.keys() and pd.api.types.is_numeric_dtype(df[col])]
             
-            # Si hay columnas numéricas y tenemos cantidad y total, buscar precio unitario por relación matemática
-            if numeric_cols and "cantidad" in column_map.values() and "total" in column_map.values():
-                try:
-                    # Buscar la columna que podría ser precio unitario basado en la relación total = cantidad * precio_unitario
-                    cantidad_col = [k for k, v in column_map.items() if v == "cantidad"][0]
-                    total_col = [k for k, v in column_map.items() if v == "total"][0]
+            # Si no hay columnas candidatas, no podemos detectar el precio unitario
+            if not candidate_cols:
+                logger.warning("No hay columnas candidatas para precio unitario")
+                return column_map
+                
+            # Inicializar puntuaciones para cada columna candidata
+            scores = {col: 0 for col in candidate_cols}
+            
+            # 1. Análisis de nombres de columnas (30% del peso total)
+            name_patterns = {
+                'precio_unitario': ['precio_unitario', 'precio', 'unit', 'p.u', 'p/u', 'p.unit', 'costo_unit', 'valor_unit', 'tarifa'],
+                'negativo': ['total', 'subtotal', 'cantidad', 'qty', 'volumen', 'area', 'longitud', 'ancho', 'alto']
+            }
+            
+            for col in candidate_cols:
+                col_lower = str(col).lower()
+                
+                # Patrones positivos (indican precio unitario)
+                for pattern in name_patterns['precio_unitario']:
+                    if pattern in col_lower:
+                        scores[col] += 30  # Peso máximo para nombres de columna
+                        break
+                
+                # Patrones negativos (indican que NO es precio unitario)
+                for pattern in name_patterns['negativo']:
+                    if pattern in col_lower:
+                        scores[col] -= 20
+                        break
+            
+            # 2. Análisis de magnitud (30% del peso total)
+            # Filtrar filas con valores no nulos en las columnas relevantes
+            valid_rows = df[(df[qty_col].notna()) & (df[total_col].notna())]
+            
+            if not valid_rows.empty:
+                qty_mean = valid_rows[qty_col].mean()
+                total_mean = valid_rows[total_col].mean()
+                
+                # Calcular el precio unitario esperado
+                expected_unit_price = total_mean / qty_mean if qty_mean != 0 else 0
+                
+                # Si el precio unitario esperado es muy cercano a 0 o es NaN, usar un valor predeterminado
+                if abs(expected_unit_price) < 1e-10 or pd.isna(expected_unit_price):
+                    expected_unit_price = total_mean  # Usar el total como referencia
+                
+                # Comparar cada columna candidata con el precio unitario esperado
+                for col in candidate_cols:
+                    if col in valid_rows.columns:
+                        col_mean = valid_rows[col].mean()
+                        
+                        # Si la media de la columna es NaN o 0, continuar con la siguiente columna
+                        if pd.isna(col_mean) or abs(col_mean) < 1e-10:
+                            continue
+                        
+                        # Calcular la diferencia relativa con el precio unitario esperado
+                        rel_diff = abs(col_mean - expected_unit_price) / max(abs(expected_unit_price), 1e-10)
+                        
+                        # Asignar puntuación basada en la similitud
+                        if rel_diff < 0.1:  # Muy similar
+                            scores[col] += 30
+                        elif rel_diff < 0.5:  # Moderadamente similar
+                            scores[col] += 20
+                        elif rel_diff < 1.0:  # Algo similar
+                            scores[col] += 10
+                        elif rel_diff > 100:  # Muy diferente
+                            scores[col] -= 10
+            
+            # 3. Validación mediante relaciones matemáticas (40% del peso total)
+            valid_count = {col: 0 for col in candidate_cols}
+            total_count = 0
+            
+            # Calcular cuántas filas cumplen la relación cantidad * precio_unitario ≈ total
+            for _, row in df.iterrows():
+                if pd.notna(row[qty_col]) and pd.notna(row[total_col]) and row[qty_col] != 0:
+                    total_count += 1
+                    expected_price = row[total_col] / row[qty_col]
                     
-                    best_col = None
-                    best_diff = 1.0  # Iniciar con el peor valor posible
-                    
-                    for num_col in numeric_cols:
-                        # Convertir a numérico para hacer cálculos
-                        df_temp = df.copy()
-                        for c in [cantidad_col, total_col, num_col]:
-                            df_temp[c] = pd.to_numeric(df_temp[c], errors='coerce')
-                        
-                        # Calcular el producto cantidad * precio_unitario
-                        df_temp['calc_total'] = df_temp[cantidad_col] * df_temp[num_col]
-                        
-                        # Comparar con el total real, filtrando NaNs y valores 0 que podrían causar problemas
-                        valid_rows = (df_temp[total_col] > 0) & (df_temp['calc_total'] > 0)
-                        df_valid = df_temp[valid_rows]
-                        
-                        if len(df_valid) > 0:
-                            # Calcular la diferencia relativa
-                            df_valid['diff'] = abs(df_valid[total_col] - df_valid['calc_total']) / df_valid[total_col]
-                            mean_diff = df_valid['diff'].mean()
+                    for col in candidate_cols:
+                        if col in row.index and pd.notna(row[col]):
+                            # Calcular error relativo
+                            rel_error = abs(row[col] - expected_price) / max(abs(expected_price), 1e-10)
                             
-                            # Actualizar si encontramos un mejor candidato
-                            if mean_diff < best_diff:
-                                best_diff = mean_diff
-                                best_col = num_col
-                    
-                    # Si la mejor diferencia es menor al 10%, es probable que sea precio unitario
-                    if best_col is not None and best_diff < 0.1:
-                        column_map[best_col] = "precio_unitario"
-                        logger.info(f"Detectada columna de precio unitario '{best_col}' por análisis de contenido (diferencia: {best_diff:.4f})")
-                except Exception as e:
-                    logger.warning(f"Error al analizar relación matemática para precio unitario: {str(e)}")
+                            # Considerar válido si el error es menor al 10%
+                            if rel_error < 0.1:
+                                valid_count[col] += 1
             
-            # Si aún no tenemos precio_unitario pero tenemos columnas numéricas, usar heurísticas
-            if "precio_unitario" not in column_map.values() and numeric_cols:
-                # Heurística: Si hay una columna con valores numéricos entre cantidad y total, podría ser precio unitario
-                if "cantidad" in column_map.values() and "total" in column_map.values():
-                    try:
-                        cantidad_col = [k for k, v in column_map.items() if v == "cantidad"][0]
-                        total_col = [k for k, v in column_map.items() if v == "total"][0]
+            # Asignar puntuación basada en la proporción de filas válidas
+            if total_count > 0:
+                for col in candidate_cols:
+                    validation_ratio = valid_count[col] / total_count
+                    
+                    # Asignar puntuación basada en la proporción
+                    if validation_ratio > 0.8:  # Más del 80% de filas válidas
+                        scores[col] += 40
+                    elif validation_ratio > 0.6:  # Más del 60% de filas válidas
+                        scores[col] += 30
+                    elif validation_ratio > 0.4:  # Más del 40% de filas válidas
+                        scores[col] += 20
+                    elif validation_ratio > 0.2:  # Más del 20% de filas válidas
+                        scores[col] += 10
+            
+            # 4. Análisis de distribución de valores (bonus de hasta 20 puntos)
+            for col in candidate_cols:
+                if col in df.columns:
+                    # Verificar si la distribución de valores es consistente con precios unitarios
+                    values = df[col].dropna()
+                    
+                    if not values.empty:
+                        # Los precios unitarios suelen tener valores positivos
+                        if (values >= 0).mean() > 0.9:  # Más del 90% son positivos
+                            scores[col] += 10
                         
-                        # Calcular medias para comparar magnitudes
-                        df_temp = df.copy()
-                        for c in [cantidad_col, total_col] + numeric_cols:
-                            df_temp[c] = pd.to_numeric(df_temp[c], errors='coerce')
-                        
-                        cant_mean = df_temp[cantidad_col].mean()
-                        total_mean = df_temp[total_col].mean()
-                        
-                        # El precio unitario debería estar entre cantidad y total en magnitud
-                        for num_col in numeric_cols:
-                            col_mean = df_temp[num_col].mean()
-                            
-                            # Si la media está entre cantidad y total (o aproximadamente)
-                            if ((cant_mean < col_mean < total_mean) or 
-                                (abs(total_mean / (col_mean * cant_mean) - 1) < 0.5)):  # Verificar que total ≈ cantidad * col
-                                column_map[num_col] = "precio_unitario"
-                                logger.info(f"Detectada columna de precio unitario '{num_col}' por análisis de magnitudes")
-                                break
-                    except Exception as e:
-                        logger.warning(f"Error al utilizar heurística de magnitudes: {str(e)}")
+                        # Los precios unitarios suelen tener cierta variabilidad pero no extrema
+                        cv = values.std() / values.mean() if values.mean() != 0 else float('inf')
+                        if 0.1 < cv < 2.0:  # Coeficiente de variación en rango razonable
+                            scores[col] += 10
+                        elif cv > 10.0:  # Variabilidad extrema, probablemente no es precio unitario
+                            scores[col] -= 10
+            
+            # Seleccionar la columna con mayor puntuación
+            if candidate_cols:
+                best_col = max(scores.items(), key=lambda x: x[1])
+                
+                # Solo asignar si la puntuación es positiva
+                if best_col[1] > 0:
+                    column_map[best_col[0]] = "precio_unitario"
+                    logger.info(f"Columna de precio unitario detectada: {best_col[0]} (puntuación: {best_col[1]})")
+                    
+                    # Registrar puntuaciones para depuración
+                    for col, score in sorted(scores.items(), key=lambda x: x[1], reverse=True)[:3]:
+                        logger.debug(f"Candidato a precio unitario: {col} (puntuación: {score})")
+                else:
+                    logger.warning("No se pudo detectar columna de precio unitario con suficiente confianza")
             
             return column_map
             
         except Exception as e:
             logger.exception(f"Error al detectar columna de precio unitario: {str(e)}")
             return column_map
-    
-    @staticmethod
-    def validate_budget_consistency(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-        """
-        Valida la consistencia de un presupuesto y genera metadatos de validación.
-        
-        Args:
-            df: DataFrame con datos de presupuesto
-            
-        Returns:
-            Tuple con (DataFrame validado, metadatos de validación)
-        """
-        try:
-            # Hacer una copia para evitar modificar el original
-            df = df.copy()
-            
-            # Inicializar metadatos
-            metadata = {
-                "total_filas": len(df),
-                "filas_validadas": 0,
-                "filas_con_errores": 0,
-                "errores_por_tipo": {},
-                "confianza": 1.0
-            }
-            
-            # Verificar si el DataFrame está vacío
-            if df.empty:
-                metadata["errores_por_tipo"]["dataframe_vacio"] = True
-                metadata["confianza"] = 0.0
-                return df, metadata
-            
-            # Verificar columnas requeridas
-            columnas_requeridas = ["codigo", "descripcion", "unidad", "cantidad", "precio_unitario", "total"]
-            columnas_faltantes = [col for col in columnas_requeridas if col not in df.columns]
-            
-            if columnas_faltantes:
-                metadata["errores_por_tipo"]["columnas_faltantes"] = columnas_faltantes
-                # Reducir confianza basado en la cantidad de columnas faltantes
-                metadata["confianza"] *= max(0.1, 1.0 - (len(columnas_faltantes) / len(columnas_requeridas) * 0.9))
-            
-            # Verificar valores nulos
-            for col in df.columns:
-                nulos = df[col].isna().sum()
-                if nulos > 0:
-                    if "valores_nulos" not in metadata["errores_por_tipo"]:
-                        metadata["errores_por_tipo"]["valores_nulos"] = {}
-                    metadata["errores_por_tipo"]["valores_nulos"][col] = nulos
-                    
-                    # Reducir confianza basado en porcentaje de nulos
-                    if len(df) > 0:  # Evitar división por cero
-                        metadata["confianza"] *= (1 - (nulos / len(df) * 0.5))
-            
-            # Verificar consistencia de cálculos
-            if all(col in df.columns for col in ["cantidad", "precio_unitario", "total"]):
-                try:
-                    # Asegurar que las columnas sean numéricas
-                    for col in ["cantidad", "precio_unitario", "total"]:
-                        df[col] = pd.to_numeric(df[col], errors='coerce')
-                    
-                    # Calcular total esperado
-                    df["total_esperado"] = df["cantidad"] * df["precio_unitario"]
-                    
-                    # Calcular discrepancia (solo para filas con valores válidos)
-                    valid_rows = (df["total"].notna() & df["total_esperado"].notna() & 
-                                  (df["total"] != 0) & (df["total_esperado"] != 0))
-                    
-                    if valid_rows.sum() > 0:
-                        # Calcular solo para filas con valores válidos
-                        df.loc[valid_rows, "discrepancia"] = abs(
-                            df.loc[valid_rows, "total"] - df.loc[valid_rows, "total_esperado"]
-                        ) / df.loc[valid_rows, "total"]
-                        
-                        # Marcar filas con discrepancias significativas
-                        df["validado"] = False  # Inicializar en False
-                        df.loc[valid_rows, "validado"] = df.loc[valid_rows, "discrepancia"] <= 0.01
-                        
-                        # Para filas sin valores válidos, marcarlas como no validadas
-                        df.loc[~valid_rows, "validado"] = False
-                        
-                        # Contar filas con errores
-                        filas_con_errores = (~df["validado"]).sum()
-                        metadata["filas_con_errores"] = int(filas_con_errores)
-                        metadata["filas_validadas"] = len(df) - filas_con_errores
-                        
-                        # Reducir confianza basado en porcentaje de errores
-                        if len(df) > 0:
-                            metadata["confianza"] *= max(0.1, (1 - (filas_con_errores / len(df) * 0.7)))
-                        
-                        # Estadísticas adicionales para depuración
-                        metadata["estadisticas"] = {
-                            "discrepancia_media": float(df.loc[valid_rows, "discrepancia"].mean()),
-                            "discrepancia_max": float(df.loc[valid_rows, "discrepancia"].max()),
-                            "porcentaje_filas_invalidas": float(filas_con_errores / len(df) * 100)
-                        }
-                    else:
-                        # No hay filas válidas para validar
-                        metadata["errores_por_tipo"]["sin_datos_para_validar"] = True
-                        metadata["confianza"] *= 0.5
-                    
-                    # Eliminar columnas temporales
-                    df = df.drop(columns=["total_esperado", "discrepancia"], errors="ignore")
-                    
-                except Exception as e:
-                    logger.warning(f"Error al validar cálculos de presupuesto: {str(e)}")
-                    metadata["errores_por_tipo"]["error_calculo"] = str(e)
-                    metadata["confianza"] *= 0.6
-            else:
-                # No podemos validar los cálculos
-                metadata["errores_por_tipo"]["no_se_puede_validar_calculos"] = True
-                metadata["confianza"] *= 0.7
-            
-            # Asegurar que la confianza esté entre 0 y 1
-            metadata["confianza"] = max(0.0, min(1.0, metadata["confianza"]))
-            
-            return df, metadata
-            
-        except Exception as e:
-            logger.exception(f"Error al validar consistencia del presupuesto: {str(e)}")
-            return df, {"error": str(e), "confianza": 0.0}

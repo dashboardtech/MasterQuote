@@ -97,7 +97,7 @@ class ExcelExtractor(BaseExtractor):
                             if any(p in col_lower for p in ['precio', 'costo', 'valor', 'total']):
                                 score += 2
                             # Patrones de actividades
-                            if any(p in col_lower for p in ['actividad', 'descripcion', 'item']):
+                            if any(p in col_lower for p in ['actividad', 'descripcion', 'descripción', 'item']):
                                 score += 2
                             # Patrones de cantidad
                             if any(p in col_lower for p in ['cantidad', 'qty', 'unidades']):
@@ -789,6 +789,23 @@ class ExcelExtractor(BaseExtractor):
             # Columnas que deberían ser numéricas
             numeric_columns = ["cantidad", "precio_unitario", "total"]
             
+            # Patrones para detectar encabezados y subtotales
+            header_patterns = [
+                r'total|subtotal|suma|precio|costo|valor|importe|monto',  # Palabras clave
+                r'^[A-Z\s]+$',  # Texto todo en mayúsculas (posible encabezado)
+                r'^\d+\.\d+\.\d+',  # Formato de código jerárquico (posible subtotal)
+                r'^\s*[\(\[].+[\)\]]',  # Texto entre paréntesis o corchetes
+            ]
+            
+            # Patrones para extraer números de textos complejos
+            number_extraction_patterns = [
+                r'(\d+[\.,]?\d*)',  # Número básico con posible decimal
+                r'(\d+[\.,]\d+)(?:[^\d]|$)',  # Número decimal seguido de no-dígito o fin de cadena
+                r'(?:[\$€£¥]\s*)(\d+[\.,]?\d*)',  # Número con símbolo de moneda
+                r'(\d+)(?:\s*(?:u|ud|und|unid|unidad|units))',  # Número seguido de unidades
+                r'(?:\()(\d+[\.,]?\d*)(?:\))',  # Número entre paréntesis
+            ]
+            
             for col in df.columns:
                 # Solo procesar columnas existentes
                 if col in numeric_columns:
@@ -796,37 +813,115 @@ class ExcelExtractor(BaseExtractor):
                         # Guardar la columna original para comparar después
                         orig_values = df[col].copy()
                         
-                        # Intentar convertir directamente
-                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                        # Convertir todos los valores a string primero para asegurar consistencia
+                        str_values = df[col].astype(str)
                         
-                        # Contar valores NaN después de la conversión
-                        nan_count = df[col].isna().sum()
-                        if nan_count > 0 and len(df) > 0:
+                        # Paso 1: Limpiar caracteres especiales comunes
+                        cleaned = (str_values.str.replace(r'[$€£¥]', '', regex=True)   # Símbolos de moneda
+                                          .str.replace(',', '.', regex=False)        # Comas como decimales
+                                          .str.replace(r'\s+', '', regex=True)       # Espacios
+                                          .str.replace(r'[^\d.-]', '', regex=True)   # Solo permitir dígitos, punto y signo
+                                          .str.strip())                              # Espacios al inicio/fin
+                        
+                        # Paso 2: Intentar convertir a numérico
+                        df[col] = pd.to_numeric(cleaned, errors='coerce')
+                        
+                        # Paso 3: Detectar y manejar valores problemáticos
+                        mask_failed = df[col].isna()
+                        failed_count = mask_failed.sum()
+                        
+                        if failed_count > 0 and len(df) > 0:
                             logger.warning(
-                                f"Columna '{col}': {nan_count}/{len(df)} valores no pudieron ser convertidos a numérico"
+                                f"Columna '{col}': {failed_count}/{len(df)} valores no pudieron ser convertidos a numérico"
                             )
                             
-                            # Intentar limpiar caracteres especiales comunes
-                            str_values = orig_values.astype(str)
-                            cleaned = (str_values.str.replace(r'[$€£¥]', '', regex=True)   # Símbolos de moneda
-                                                .str.replace(',', '.', regex=False)        # Comas como decimales
-                                                .str.replace(r'\s+', '', regex=True)       # Espacios
-                                                .str.strip())                              # Espacios al inicio/fin
+                            # Obtener valores que fallaron la conversión
+                            failed_values = orig_values[mask_failed].astype(str)
                             
-                            # Intentar convertir de nuevo
-                            df[col] = pd.to_numeric(cleaned, errors='coerce')
+                            # Paso 3.1: Detectar encabezados y subtotales
+                            is_header = pd.Series(False, index=failed_values.index)
+                            for pattern in header_patterns:
+                                is_header = is_header | failed_values.str.lower().str.contains(pattern, regex=True, na=False)
                             
-                            # Verificar si mejoramos
-                            new_nan_count = df[col].isna().sum()
-                            if new_nan_count < nan_count:
-                                logger.info(f"Limpieza de datos mejoró conversión: {nan_count} -> {new_nan_count} valores nulos")
-                            else:
-                                # No hubo mejora, volver a valores originales
-                                df[col] = orig_values
+                            # Paso 3.2: Para valores que no son encabezados, intentar extracciones más agresivas
+                            non_header_mask = mask_failed & ~is_header
+                            
+                            if non_header_mask.any():
+                                # Crear una serie para almacenar los mejores valores extraídos
+                                extracted_values = pd.Series(np.nan, index=df.index)
+                                
+                                # Intentar cada patrón de extracción
+                                for pattern in number_extraction_patterns:
+                                    # Extraer números usando el patrón actual
+                                    extracted = orig_values[non_header_mask].astype(str).str.extract(pattern, expand=False)
+                                    
+                                    # Convertir a numérico y reemplazar comas por puntos
+                                    if not extracted.empty:
+                                        extracted = extracted.str.replace(',', '.', regex=False)
+                                        numeric_extracted = pd.to_numeric(extracted, errors='coerce')
+                                        
+                                        # Actualizar valores extraídos donde tengamos un valor válido
+                                        valid_indices = numeric_extracted.notna()
+                                        if valid_indices.any():
+                                            extracted_values.loc[numeric_extracted.index[valid_indices]] = numeric_extracted[valid_indices]
+                                
+                                # Actualizar el DataFrame con los valores extraídos
+                                valid_extracted = extracted_values.notna()
+                                if valid_extracted.any():
+                                    df.loc[valid_extracted, col] = extracted_values[valid_extracted]
+                                    
+                                    # Actualizar la máscara de fallos para reflejar los valores recuperados
+                                    mask_failed = df[col].isna()
+                                    recovered = failed_count - mask_failed.sum()
+                                    if recovered > 0:
+                                        logger.info(f"Columna '{col}': Se recuperaron {recovered} valores mediante extracción avanzada")
+                            
+                            # Paso 3.3: Para casos especiales donde hay texto con números
+                            still_failed = mask_failed & df[col].isna()
+                            if still_failed.any():
+                                # Buscar patrones como "X unidades a Y precio"
+                                special_pattern = r'(\d+)(?:\s*(?:u|ud|und|unid|unidad|units))(?:.*?)(?:a|por|at|@)\s*(\d+[\.,]?\d*)'
+                                matches = orig_values[still_failed].astype(str).str.extract(special_pattern, expand=True)
+                                
+                                if not matches.empty and not matches.iloc[:, 0].isna().all():
+                                    # Dependiendo de la columna, usar el primer o segundo número
+                                    if col == 'cantidad':
+                                        extracted = matches.iloc[:, 0]
+                                    elif col in ['precio_unitario', 'total']:
+                                        extracted = matches.iloc[:, 1].str.replace(',', '.', regex=False)
+                                    
+                                    numeric_extracted = pd.to_numeric(extracted, errors='coerce')
+                                    valid_indices = numeric_extracted.notna()
+                                    if valid_indices.any():
+                                        df.loc[numeric_extracted.index[valid_indices], col] = numeric_extracted[valid_indices]
+                                        
+                                        recovered = still_failed.sum() - (still_failed & df[col].isna()).sum()
+                                        if recovered > 0:
+                                            logger.info(f"Columna '{col}': Se recuperaron {recovered} valores mediante patrones especiales")
+                    
                     except Exception as e:
                         logger.exception(f"Error al normalizar columna '{col}': {str(e)}")
                         # Mantener el valor original en caso de error
-                        pass
+                        df[col] = orig_values
+            
+            # Paso 4: Validación final de valores numéricos
+            for col in numeric_columns:
+                if col in df.columns:
+                    # Verificar valores negativos en columnas que deberían ser positivas
+                    if col in ['cantidad', 'precio_unitario']:
+                        neg_mask = (df[col] < 0)
+                        if neg_mask.any():
+                            # Convertir a valores absolutos
+                            df.loc[neg_mask, col] = df.loc[neg_mask, col].abs()
+                            logger.warning(f"Columna '{col}': Se convirtieron {neg_mask.sum()} valores negativos a positivos")
+                    
+                    # Verificar valores extremadamente grandes que podrían ser errores
+                    if col == 'cantidad':
+                        outlier_threshold = df[col].quantile(0.95) * 10  # 10 veces el percentil 95
+                        if outlier_threshold > 0:
+                            outlier_mask = (df[col] > outlier_threshold)
+                            if outlier_mask.sum() > 0:
+                                logger.warning(f"Columna '{col}': {outlier_mask.sum()} valores son posibles outliers (>{outlier_threshold})")
             
             return df
             

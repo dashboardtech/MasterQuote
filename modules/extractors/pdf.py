@@ -3,6 +3,7 @@ import logging
 import tempfile
 from typing import Dict, Any, Optional, List
 from pathlib import Path
+from PIL import Image, ImageEnhance
 from .base import BaseExtractor
 
 logger = logging.getLogger(__name__)
@@ -146,7 +147,6 @@ class PDFExtractor(BaseExtractor):
             image = image.convert('L')
             
             # Aumentar contraste
-            from PIL import ImageEnhance
             enhancer = ImageEnhance.Contrast(image)
             image = enhancer.enhance(2.0)
             

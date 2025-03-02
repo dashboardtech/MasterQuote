@@ -5,6 +5,7 @@ from .pdf import PDFExtractor
 from .ai_assisted import AIAssistedExtractor
 from .dockling import DocklingExtractor
 from .factory import ExtractorFactory
+from .budget_validator import BudgetValidator
 
 __all__ = [
     'BaseExtractor',
@@ -13,5 +14,6 @@ __all__ = [
     'PDFExtractor',
     'AIAssistedExtractor',
     'DocklingExtractor',
-    'ExtractorFactory'
+    'ExtractorFactory',
+    'BudgetValidator'
 ]
